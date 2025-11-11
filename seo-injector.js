@@ -1,247 +1,153 @@
 
-// --- SEO agent: grouped block injection (title + meta description + keywords + OG) + MutationObserver ---
-(function() {
-  let _isUpdating = false;
-  let _observer;
-  const START_MARK = 'seo-agent-start';
-  const END_MARK = 'seo-agent-end';
-  const DATA_ATTR = 'data-seo-agent';
+// --- SEO agent injector (client) ---
+(function () {
+  const WORKER = "https://seo-ai.jeff-552.workers.dev";
 
-  function esc(s=''){ return String(s == null ? '' : s).trim(); }
+  let _isUpdating = false, _observer;
+  const START = "seo-agent-start", END = "seo-agent-end", ATTR = "data-seo-agent";
+  const esc = s => String(s == null ? "" : s).trim();
 
-  function findExistingBlock(head) {
-    // Find comment node start and end, or fallback to elements with data-seo-agent
-    let startNode = null, endNode = null;
+  function removeBlock(head){
+    // remove between START/END or any flagged nodes
+    let start=null,end=null;
     for (const n of head.childNodes) {
-      if (n.nodeType === Node.COMMENT_NODE && n.data && n.data.trim() === START_MARK) startNode = n;
-      if (n.nodeType === Node.COMMENT_NODE && n.data && n.data.trim() === END_MARK) endNode = n;
-      if (startNode && endNode) break;
+      if (n.nodeType===8 && n.data && n.data.trim()===START) start=n;
+      if (n.nodeType===8 && n.data && n.data.trim()===END)   end=n;
+      if (start && end) break;
     }
-    if (startNode && endNode) {
-      // collect nodes between start and end inclusive
-      const nodes = [];
-      let cur = startNode;
-      while (cur) {
-        nodes.push(cur);
-        if (cur === endNode) break;
-        cur = cur.nextSibling;
-      }
-      return nodes;
+    if (start && end){
+      let cur=start;
+      while (cur){ const nxt=cur.nextSibling; try{cur.remove();}catch{} if(cur===end) break; cur=nxt; }
     }
-    // fallback: find elements flagged with data-seo-agent
-    const flagged = Array.from(head.querySelectorAll(`[${DATA_ATTR}="true"]`));
-    return flagged.length ? flagged : null;
+    head.querySelectorAll(`[${ATTR}="true"]`).forEach(el=>{ try{el.remove();}catch{} });
   }
 
-  function removeExistingBlock(head) {
-    const blockNodes = findExistingBlock(head);
-    if (blockNodes && blockNodes.length) {
-      for (const n of blockNodes) {
-        try { n.remove(); } catch(e) {}
-      }
+  function buildFrag(seo){
+    const f=document.createDocumentFragment();
+    f.appendChild(document.createComment(START));
+
+    if (seo.meta_title && seo.meta_title.trim()){
+      const t=document.createElement("title");
+      t.setAttribute(ATTR,"true");
+      t.textContent=esc(seo.meta_title);
+      f.appendChild(t);
     }
-    // Also remove any stray data-seo-agent attributes elsewhere just in case
-    Array.from(head.querySelectorAll(`[${DATA_ATTR}="true"]`)).forEach(el => el.remove());
+    if (seo.meta_description && seo.meta_description.trim()){
+      const d=document.createElement("meta");
+      d.setAttribute("name","description");
+      d.setAttribute("content",esc(seo.meta_description));
+      d.setAttribute(ATTR,"true");
+      f.appendChild(d);
+    }
+    if (Array.isArray(seo.keywords) && seo.keywords.length){
+      const k=document.createElement("meta");
+      k.setAttribute("name","keywords");
+      k.setAttribute("content", seo.keywords.map(esc).filter(Boolean).join(", "));
+      k.setAttribute(ATTR,"true");
+      f.appendChild(k);
+    }
+    if (seo.meta_title){
+      const ogt=document.createElement("meta");
+      ogt.setAttribute("property","og:title");
+      ogt.setAttribute("content",esc(seo.meta_title));
+      ogt.setAttribute(ATTR,"true");
+      f.appendChild(ogt);
+    }
+    if (seo.meta_description){
+      const ogd=document.createElement("meta");
+      ogd.setAttribute("property","og:description");
+      ogd.setAttribute("content",esc(seo.meta_description));
+      ogd.setAttribute(ATTR,"true");
+      f.appendChild(ogd);
+    }
+    f.appendChild(document.createComment(END));
+    return f;
   }
 
-  function buildSeoFragment(seo) {
-    const frag = document.createDocumentFragment();
-    // start comment
-    frag.appendChild(document.createComment(START_MARK));
-
-    // Title element (with marker)
-    if (seo.meta_title && seo.meta_title.trim()) {
-      const titleEl = document.createElement('title');
-      titleEl.setAttribute(DATA_ATTR, 'true');
-      titleEl.textContent = esc(seo.meta_title.trim());
-      frag.appendChild(titleEl);
-    }
-
-    // Description meta
-    if (seo.meta_description && seo.meta_description.trim()) {
-      const desc = document.createElement('meta');
-      desc.setAttribute('name', 'description');
-      desc.setAttribute('content', esc(seo.meta_description.trim()));
-      desc.setAttribute(DATA_ATTR, 'true');
-      frag.appendChild(desc);
-    }
-
-    // Keywords meta (if provided)
-    if (Array.isArray(seo.keywords) && seo.keywords.length) {
-      const kw = document.createElement('meta');
-      kw.setAttribute('name', 'keywords');
-      kw.setAttribute('content', seo.keywords.map(k => esc(k)).filter(Boolean).join(', '));
-      kw.setAttribute(DATA_ATTR, 'true');
-      frag.appendChild(kw);
-    }
-
-    // OG title + OG description
-    if (seo.meta_title && seo.meta_title.trim()) {
-      const ogt = document.createElement('meta');
-      ogt.setAttribute('property', 'og:title');
-      ogt.setAttribute('content', esc(seo.meta_title.trim()));
-      ogt.setAttribute(DATA_ATTR, 'true');
-      frag.appendChild(ogt);
-    }
-    if (seo.meta_description && seo.meta_description.trim()) {
-      const ogd = document.createElement('meta');
-      ogd.setAttribute('property', 'og:description');
-      ogd.setAttribute('content', esc(seo.meta_description.trim()));
-      ogd.setAttribute(DATA_ATTR, 'true');
-      frag.appendChild(ogd);
-    }
-
-    // end comment
-    frag.appendChild(document.createComment(END_MARK));
-    return frag;
-  }
-
-  function applySeoBlock(seo) {
-    if (!seo) return;
-    const head = document.head || document.getElementsByTagName('head')[0] || document.documentElement;
-    if (!head) return;
-
-    _isUpdating = true;
-    stopHeadObserver();
-
-    try {
-      // Remove previous block (if any)
-      removeExistingBlock(head);
-
-      // Build new grouped fragment and insert at top of head
-      const frag = buildSeoFragment(seo);
-      // insert at very top so it is the first meta information
-      head.insertBefore(frag, head.firstChild);
-
-      // Also set document.title (keeps title in sync for browsers)
-      if (seo.meta_title && seo.meta_title.trim()) {
-        document.title = esc(seo.meta_title.trim());
-      }
-    } finally {
-      _isUpdating = false;
-      // restart observer to protect the block
-      startHeadObserver(() => {
-        try { window.__applySeoAgent && window.__applySeoAgent(seo); } catch(e){}
-      });
-    }
-  }
-
-  // Observer that watches for removals/changes to the grouped block and re-applies.
-  function startHeadObserver(reapplyFn) {
-    if (typeof MutationObserver === 'undefined') return;
-    const head = document.head || document.getElementsByTagName('head')[0] || document.documentElement;
-    let timer = null;
-
-    _observer = new MutationObserver(mutations => {
+  function startObserver(reapply){
+    if (typeof MutationObserver==="undefined") return;
+    const head=document.head||document.getElementsByTagName("head")[0]||document.documentElement;
+    let timer=null;
+    _observer=new MutationObserver(()=>{
       if (_isUpdating) return;
-      // if the grouped block is missing or any flagged elements were changed/removed, reapply
-      const anyFlagged = head.querySelectorAll(`[${DATA_ATTR}="true"]`).length > 0;
-      // detect missing block quickly via comment markers
-      let hasStart = false, hasEnd = false;
-      for (const n of head.childNodes) {
-        if (n.nodeType === Node.COMMENT_NODE && n.data && n.data.trim() === START_MARK) hasStart = true;
-        if (n.nodeType === Node.COMMENT_NODE && n.data && n.data.trim() === END_MARK) hasEnd = true;
-        if (hasStart && hasEnd) break;
+      const flagged=head.querySelectorAll(`[${ATTR}="true"]`).length>0;
+      let hasS=false,hasE=false;
+      for (const n of head.childNodes){
+        if (n.nodeType===8 && n.data && n.data.trim()===START) hasS=true;
+        if (n.nodeType===8 && n.data && n.data.trim()===END)   hasE=true;
+        if (hasS && hasE) break;
       }
-      if (!anyFlagged || !hasStart || !hasEnd) {
+      if (!flagged || !hasS || !hasE){
         clearTimeout(timer);
-        timer = setTimeout(reapplyFn, 150);
+        timer=setTimeout(reapply,150);
+      }
+    });
+    _observer.observe(head,{childList:true,subtree:true,attributes:true,attributeFilter:["content"]});
+  }
+  function stopObserver(){ if(_observer){ try{_observer.disconnect();}catch{} _observer=null; } }
+
+  function applySeo(seo){
+    const head=document.head||document.getElementsByTagName("head")[0]||document.documentElement;
+    if (!head || !seo) return;
+    _isUpdating=true; stopObserver();
+    try{
+      removeBlock(head);
+      head.insertBefore(buildFrag(seo), head.firstChild);
+      if (seo.meta_title) document.title=esc(seo.meta_title);
+    } finally {
+      _isUpdating=false;
+      startObserver(()=>{ try{ applySeo(seo); }catch{} });
+    }
+  }
+
+  async function injectSEO(){
+    try{
+      // If server already produced AI tags, do nothing.
+      if (window.SEO_AGENT_HAS_AI === true) {
+        console.debug("[SEO] Server-side AI present; injector skipped.");
         return;
       }
 
-      // Also watch attribute modifications on flagged elements
-      for (const m of mutations) {
-        if (m.type === 'attributes' && m.target && m.target.matches && m.target.matches(`[${DATA_ATTR}="true"]`)) {
-          clearTimeout(timer);
-          timer = setTimeout(reapplyFn, 150);
-          return;
-        }
-        if (m.type === 'childList') {
-          // additions/removals may have disturbed the block
-          if (m.addedNodes.length || m.removedNodes.length) {
-            // if any added/removed node is inside head, recheck
-            clearTimeout(timer);
-            timer = setTimeout(reapplyFn, 150);
-            return;
-          }
-        }
+      if (!document.body) {
+        await new Promise(r=>addEventListener("DOMContentLoaded", r, {once:true}));
       }
-    });
 
-    _observer.observe(head, { childList: true, subtree: true, attributes: true, attributeFilter: ['content'] });
-  }
+      const safeText = (document.body.innerText||"").slice(0,2000);
+      const company = window.SEO_COMPANY || { name:"", shop_description:"", shop_url:"", currency:"" };
 
-  function stopHeadObserver() {
-    if (_observer) {
-      try { _observer.disconnect(); } catch(e){}
-      _observer = null;
+      const res = await fetch(WORKER+"/", {
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify({
+          pageUrl: location.href,
+          pageContent: safeText,
+          company
+        })
+      });
+
+      let seo={};
+      try { seo = await res.json(); } catch(e){ console.warn("[SEO] Worker returned non-JSON.", e); return; }
+
+      // Validate before applying to avoid flashes
+      const bad = new Set(["false","null","undefined","n/a","none","0"]);
+      const t = (seo.meta_title||"").trim();
+      const d = (seo.meta_description||"").trim();
+      const ok = (t && !bad.has(t.toLowerCase())) || (d && !bad.has(d.toLowerCase()));
+
+      console.debug("[SEO] Injector received:", seo, "ok:", ok);
+
+      if (!ok) return;
+      applySeo(seo);
+    } catch (err){
+      console.error("[SEO] Injection failed:", err);
     }
   }
 
-  // Expose global helper (keeps compatibility with your existing injectSEO)
-  window.__applySeoAgent = function(seo) {
-    if (!seo) return;
-    applySeoBlock(seo);
-  };
+  // run + listen for Shopify events
+  injectSEO();
+  document.addEventListener("shopify:section:load", injectSEO);
+  document.addEventListener("shopify:navigation:end", injectSEO);
 
-  // cleanup on unload
-  window.addEventListener('unload', () => { stopHeadObserver(); });
+  // expose for debugging if needed
+  window.__applySeoAgent = applySeo;
 })();
-
-
-
-/* --- Your injectSEO (unchanged behavior) --- */
-async function injectSEO() {
-  try {
-    if (!document.body) {
-      await new Promise(resolve => window.addEventListener('DOMContentLoaded', resolve, { once: true }));
-    }
-
-    const safePageContent = (document.body && (document.body.innerText || "")) ? String(document.body.innerText).slice(0, 2000) : "";
-
-    const company = window.SEO_COMPANY || {
-      name: '',
-      description: '',
-      email: '',
-      phone: '',
-      url: '',
-      currency: ''
-    };
-
-    const res = await fetch("https://seo-ai.jeff-552.workers.dev/", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        pageUrl: window.location.href,
-        pageContent: safePageContent,
-        company
-      })
-    });
-
-    let seo = {};
-    try { seo = await res.json(); } catch (e) { console.warn("SEO Worker returned non-JSON or invalid body:", e); return; }
-
-    console.log("SRM SEO AI Agent return:", seo);
-
-    // Apply grouped SEO block
-    try { if (window.__applySeoAgent && seo) window.__applySeoAgent(seo); } catch (e) { console.warn('Applying SEO via __applySeoAgent failed:', e); }
-
-    // Fallback: keywords handling (kept for compatibility)
-    const existingKeywordsEl = document.querySelector('meta[name="keywords"]');
-    if (seo && Array.isArray(seo.keywords) && seo.keywords.length > 0) {
-      let kwTag = existingKeywordsEl;
-      if (!kwTag) {
-        kwTag = document.createElement('meta');
-        kwTag.setAttribute('name', 'keywords');
-        document.head.appendChild(kwTag);
-      }
-      kwTag.setAttribute('content', seo.keywords.map(k => String(k).trim()).filter(Boolean).join(', '));
-    }
-  } catch (err) {
-    console.error("SEO injection failed:", err);
-  }
-}
-
-injectSEO();
-document.addEventListener('shopify:section:load', injectSEO);
-document.addEventListener('shopify:navigation:end', injectSEO);
