@@ -1,86 +1,126 @@
+/*!
+ * SEO Injector
+ * - Logs AI SEO JSON to console (pretty-printed)
+ * - Applies meta tags to <head>
+ * - Reapplies on Shopify soft navigation events
+ *
+ * Usage:
+ * <script>window.seoAiDebug = true; // optional</script>
+ * <script src="https://cdn.jsdelivr.net/gh/your-org/your-repo/injector.js"></script>
+ */
+
 (function () {
-  const WORKER = "https://seo-ai.jeff-552.workers.dev";
+  "use strict";
 
-  // Turn on verbose logs by default. You can flip this at runtime, too.
-  window.seoAiDebug = (typeof window.seoAiDebug === "boolean") ? window.seoAiDebug : true;
-  const DEBUG = !!window.seoAiDebug;
-  const group = (title) => { if (DEBUG) try { console.groupCollapsed(title); } catch{} };
-  const groupEnd = () => { if (DEBUG) try { console.groupEnd(); } catch{} };
-  const log = (...a) => { if (DEBUG) console.log(...a); };
-  const warn = (...a) => { if (DEBUG) console.warn(...a); };
-  const error = (...a) => { if (DEBUG) console.error(...a); };
+  /*** CONFIG ***/
+  var WORKER = "https://seo-ai.jeff-552.workers.dev"; // <-- change if needed
 
-  let _isUpdating = false, _observer;
-  const START = "seo-agent-start", END = "seo-agent-end", ATTR = "data-seo-agent";
-  const BAD = new Set(["false","null","undefined","n/a","none","0"]);
-  const esc = s => String(s == null ? "" : s).trim();
-  const ok  = s => !!esc(s) && !BAD.has(esc(s).toLowerCase());
+  // Debug flag (can be pre-set via window.seoAiDebug = true)
+  var DEBUG = (typeof window.seoAiDebug === "boolean") ? window.seoAiDebug : true;
+
+  /*** LOG HELPERS ***/
+  var group = function (t) { if (DEBUG) try { console.groupCollapsed(t); } catch {} };
+  var groupEnd = function () { if (DEBUG) try { console.groupEnd(); } catch {} };
+  var log = function () { if (DEBUG) console.log.apply(console, arguments); };
+  var warn = function () { if (DEBUG) console.warn.apply(console, arguments); };
+  var error = function () { if (DEBUG) console.error.apply(console, arguments); };
+
+  /*** GLOBAL HOOKS ***/
+  // Last SEO object and helper to reprint it
+  window.__lastSeoAi = null;
+  window.__printSeoAi = function () {
+    try {
+      if (!window.__lastSeoAi) { console.log("{}"); return; }
+      console.log(JSON.stringify(window.__lastSeoAi, null, 4));
+    } catch (e) { console.log("{}"); }
+  };
+
+  /*** UTILITIES ***/
+  var START = "seo-agent-start", END = "seo-agent-end", ATTR = "data-seo-agent";
+  var BAD = new Set(["false","null","undefined","n/a","none","0"]);
+  var esc = function (s) { return String(s == null ? "" : s).trim(); };
+  var ok  = function (s) { var v = esc(s); return !!v && !BAD.has(v.toLowerCase()); };
 
   function removeBlock(head){
-    let start=null,end=null;
-    for (const n of head.childNodes) {
+    var start=null,end=null;
+    // Find our comment block markers
+    for (var i=0;i<head.childNodes.length;i++){
+      var n=head.childNodes[i];
       if (n.nodeType===8 && n.data && n.data.trim()===START) start=n;
       if (n.nodeType===8 && n.data && n.data.trim()===END)   end=n;
       if (start && end) break;
     }
+    // Remove marked block
     if (start && end){
-      let cur=start;
-      while (cur){ const nxt=cur.nextSibling; try{cur.remove();}catch{} if(cur===end) break; cur=nxt; }
+      var cur=start;
+      while (cur){
+        var nxt=cur.nextSibling;
+        try { cur.remove(); } catch {}
+        if (cur===end) break;
+        cur=nxt;
+      }
     }
-    head.querySelectorAll(`[${ATTR}="true"]`).forEach(el=>{ try{el.remove();}catch{} });
+    // Remove any previous injected meta elements
+    var flagged = head.querySelectorAll("[" + ATTR + '="true"]');
+    for (var j=0;j<flagged.length;j++){
+      try { flagged[j].remove(); } catch {}
+    }
   }
 
   function buildFrag(seo){
-    const f=document.createDocumentFragment();
+    var f=document.createDocumentFragment();
     f.appendChild(document.createComment(START));
 
     if (ok(seo.meta_title)){
-      const t=document.createElement("title");
+      var t=document.createElement("title");
       t.setAttribute(ATTR,"true");
       t.textContent=esc(seo.meta_title);
       f.appendChild(t);
     }
     if (ok(seo.meta_description)){
-      const d=document.createElement("meta");
+      var d=document.createElement("meta");
       d.setAttribute("name","description");
       d.setAttribute("content",esc(seo.meta_description));
       d.setAttribute(ATTR,"true");
       f.appendChild(d);
     }
     if (Array.isArray(seo.keywords) && seo.keywords.length){
-      const k=document.createElement("meta");
+      var k=document.createElement("meta");
       k.setAttribute("name","keywords");
       k.setAttribute("content", seo.keywords.map(esc).filter(Boolean).join(", "));
       k.setAttribute(ATTR,"true");
       f.appendChild(k);
     }
     if (ok(seo.meta_title)){
-      const ogt=document.createElement("meta");
+      var ogt=document.createElement("meta");
       ogt.setAttribute("property","og:title");
       ogt.setAttribute("content",esc(seo.meta_title));
       ogt.setAttribute(ATTR,"true");
       f.appendChild(ogt);
     }
     if (ok(seo.meta_description)){
-      const ogd=document.createElement("meta");
+      var ogd=document.createElement("meta");
       ogd.setAttribute("property","og:description");
       ogd.setAttribute("content",esc(seo.meta_description));
       ogd.setAttribute(ATTR,"true");
       f.appendChild(ogd);
     }
+
     f.appendChild(document.createComment(END));
     return f;
   }
 
+  var _observer=null, _isUpdating=false;
   function startObserver(reapply){
     if (typeof MutationObserver==="undefined") return;
-    const head=document.head||document.getElementsByTagName("head")[0]||document.documentElement;
-    let timer=null;
-    _observer=new MutationObserver(()=>{
+    var head=document.head||document.getElementsByTagName("head")[0]||document.documentElement;
+    var timer=null;
+    _observer=new MutationObserver(function(){
       if (_isUpdating) return;
-      const flagged=head.querySelectorAll(`[${ATTR}="true"]`).length>0;
-      let hasS=false,hasE=false;
-      for (const n of head.childNodes){
+      var flagged = head.querySelectorAll("[" + ATTR + '="true"]').length>0;
+      var hasS=false,hasE=false;
+      for (var i=0;i<head.childNodes.length;i++){
+        var n=head.childNodes[i];
         if (n.nodeType===8 && n.data && n.data.trim()===START) hasS=true;
         if (n.nodeType===8 && n.data && n.data.trim()===END)   hasE=true;
         if (hasS && hasE) break;
@@ -95,7 +135,7 @@
   function stopObserver(){ if(_observer){ try{_observer.disconnect();}catch{} _observer=null; } }
 
   function applySeo(seo){
-    const head=document.head||document.getElementsByTagName("head")[0]||document.documentElement;
+    var head=document.head||document.getElementsByTagName("head")[0]||document.documentElement;
     if (!head || !seo) return;
     _isUpdating=true; stopObserver();
     try{
@@ -104,16 +144,17 @@
       if (ok(seo.meta_title)) document.title=esc(seo.meta_title);
     } finally {
       _isUpdating=false;
-      startObserver(()=>{ try{ applySeo(seo); }catch(e){ warn("[SEO] reapply error", e); } });
+      startObserver(function(){ try{ applySeo(seo); }catch(e){ warn("[SEO] reapply error", e); } });
     }
   }
 
   function logSSRIfPresent() {
     try {
-      const ssrTitle = esc(document.title || "");
-      const md = document.querySelector('meta[name="description"]');
-      const ssrDesc = esc(md ? md.getAttribute("content") : "");
-      const kw = esc(document.querySelector('meta[name="keywords"]')?.getAttribute('content')||"");
+      var ssrTitle = esc(document.title || "");
+      var md = document.querySelector('meta[name="description"]');
+      var ssrDesc = esc(md ? md.getAttribute("content") : "");
+      var kwMeta = document.querySelector('meta[name="keywords"]');
+      var kw = esc(kwMeta ? kwMeta.getAttribute('content') : "");
       group("🧩 SEO (SSR)");
       log("title:", ssrTitle);
       log("description:", ssrDesc);
@@ -126,56 +167,58 @@
   async function fetchAIAndLogApply(){
     try{
       if (!document.body) {
-        await new Promise(r=>addEventListener("DOMContentLoaded", r, {once:true}));
+        await new Promise(function(r){ addEventListener("DOMContentLoaded", r, {once:true}); });
       }
 
-      const safeText = String(document.body.innerText||"").replace(/\s+/g,' ').trim().slice(0,2000);
-      const company = window.SEO_COMPANY || { name:"", shop_description:"", shop_url:"", currency:"" };
+      var safeText = String(document.body.innerText||"").replace(/\s+/g,' ').trim().slice(0,2000);
+      var company = window.SEO_COMPANY || { name:"", shop_description:"", shop_url:"", currency:"" };
 
       group("🔎 SEO (Worker POST)");
       log("POST", WORKER+"/", { pageUrl: location.href, preview: safeText.slice(0,120), company });
 
-      const res = await fetch(WORKER+"/", {
+      var res = await fetch(WORKER+"/", {
         method:"POST",
         headers:{ "Content-Type":"application/json" },
         body: JSON.stringify({ pageUrl: location.href, pageContent: safeText, company })
       });
 
-      const text = await res.text();
-      let seo = {};
+      var text = await res.text();
+      var seo = {};
       try { seo = JSON.parse(text); } catch { seo = {}; }
 
-      log("status:", res.status);
-      log("raw:", text);
-      log("json:", seo);
+      // Save & ALWAYS print ONLY the JSON object (pretty)
+      window.__lastSeoAi = seo;
+      console.log(JSON.stringify(seo, null, 4)); // <— exact console output you requested
 
-      const t = esc(seo.meta_title||"");
-      const d = esc(seo.meta_description||"");
-      const usable = ok(t) || ok(d);
-      log("usable:", usable);
+      // Optional developer logs
+      log("status:", res.status);
+      log("usable:", (ok(seo.meta_title)||ok(seo.meta_description)));
       groupEnd();
 
-      if (!usable) return;
-      applySeo(seo);
+      // Apply if usable
+      var t = esc(seo.meta_title||"");
+      var d = esc(seo.meta_description||"");
+      if (ok(t) || ok(d)) applySeo(seo);
+
     } catch (err){
       error("[SEO] Injection failed:", err);
     }
   }
 
-  // Always print SSR snapshot immediately
+  // Initial SSR snapshot
   logSSRIfPresent();
 
-  // Then fetch AI and log results on page load
+  // Run on load
   if (document.readyState === "complete" || document.readyState === "interactive") {
     setTimeout(fetchAIAndLogApply, 0);
   } else {
-    document.addEventListener("DOMContentLoaded", () => setTimeout(fetchAIAndLogApply, 0), { once:true });
+    document.addEventListener("DOMContentLoaded", function(){ setTimeout(fetchAIAndLogApply, 0); }, { once:true });
   }
 
-  // Also log on Shopify soft navs
+  // Re-run on Shopify soft navigations
   document.addEventListener("shopify:section:load", fetchAIAndLogApply);
   document.addEventListener("shopify:navigation:end", fetchAIAndLogApply);
 
-  // expose for manual testing
+  // Manual hook for testing
   window.__applySeoAgent = applySeo;
 })();
