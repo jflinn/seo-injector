@@ -1,14 +1,22 @@
-
-// --- SEO agent injector (client) ---
 (function () {
   const WORKER = "https://seo-ai.jeff-552.workers.dev";
 
+  // Turn on verbose logs by default. You can flip this at runtime, too.
+  window.seoAiDebug = (typeof window.seoAiDebug === "boolean") ? window.seoAiDebug : true;
+  const DEBUG = !!window.seoAiDebug;
+  const group = (title) => { if (DEBUG) try { console.groupCollapsed(title); } catch{} };
+  const groupEnd = () => { if (DEBUG) try { console.groupEnd(); } catch{} };
+  const log = (...a) => { if (DEBUG) console.log(...a); };
+  const warn = (...a) => { if (DEBUG) console.warn(...a); };
+  const error = (...a) => { if (DEBUG) console.error(...a); };
+
   let _isUpdating = false, _observer;
   const START = "seo-agent-start", END = "seo-agent-end", ATTR = "data-seo-agent";
+  const BAD = new Set(["false","null","undefined","n/a","none","0"]);
   const esc = s => String(s == null ? "" : s).trim();
+  const ok  = s => !!esc(s) && !BAD.has(esc(s).toLowerCase());
 
   function removeBlock(head){
-    // remove between START/END or any flagged nodes
     let start=null,end=null;
     for (const n of head.childNodes) {
       if (n.nodeType===8 && n.data && n.data.trim()===START) start=n;
@@ -26,13 +34,13 @@
     const f=document.createDocumentFragment();
     f.appendChild(document.createComment(START));
 
-    if (seo.meta_title && seo.meta_title.trim()){
+    if (ok(seo.meta_title)){
       const t=document.createElement("title");
       t.setAttribute(ATTR,"true");
       t.textContent=esc(seo.meta_title);
       f.appendChild(t);
     }
-    if (seo.meta_description && seo.meta_description.trim()){
+    if (ok(seo.meta_description)){
       const d=document.createElement("meta");
       d.setAttribute("name","description");
       d.setAttribute("content",esc(seo.meta_description));
@@ -46,14 +54,14 @@
       k.setAttribute(ATTR,"true");
       f.appendChild(k);
     }
-    if (seo.meta_title){
+    if (ok(seo.meta_title)){
       const ogt=document.createElement("meta");
       ogt.setAttribute("property","og:title");
       ogt.setAttribute("content",esc(seo.meta_title));
       ogt.setAttribute(ATTR,"true");
       f.appendChild(ogt);
     }
-    if (seo.meta_description){
+    if (ok(seo.meta_description)){
       const ogd=document.createElement("meta");
       ogd.setAttribute("property","og:description");
       ogd.setAttribute("content",esc(seo.meta_description));
@@ -93,61 +101,81 @@
     try{
       removeBlock(head);
       head.insertBefore(buildFrag(seo), head.firstChild);
-      if (seo.meta_title) document.title=esc(seo.meta_title);
+      if (ok(seo.meta_title)) document.title=esc(seo.meta_title);
     } finally {
       _isUpdating=false;
-      startObserver(()=>{ try{ applySeo(seo); }catch{} });
+      startObserver(()=>{ try{ applySeo(seo); }catch(e){ warn("[SEO] reapply error", e); } });
     }
   }
 
-  async function injectSEO(){
-    try{
-      // If server already produced AI tags, do nothing.
-      if (window.SEO_AGENT_HAS_AI === true) {
-        console.debug("[SEO] Server-side AI present; injector skipped.");
-        return;
-      }
+  function logSSRIfPresent() {
+    try {
+      const ssrTitle = esc(document.title || "");
+      const md = document.querySelector('meta[name="description"]');
+      const ssrDesc = esc(md ? md.getAttribute("content") : "");
+      const kw = esc(document.querySelector('meta[name="keywords"]')?.getAttribute('content')||"");
+      group("🧩 SEO (SSR)");
+      log("title:", ssrTitle);
+      log("description:", ssrDesc);
+      if (kw) log("keywords:", kw);
+      log("SEO_AGENT_HAS_AI:", !!window.SEO_AGENT_HAS_AI);
+      groupEnd();
+    } catch (e) { /* ignore */ }
+  }
 
+  async function fetchAIAndLogApply(){
+    try{
       if (!document.body) {
         await new Promise(r=>addEventListener("DOMContentLoaded", r, {once:true}));
       }
 
-      const safeText = (document.body.innerText||"").slice(0,2000);
+      const safeText = String(document.body.innerText||"").replace(/\s+/g,' ').trim().slice(0,2000);
       const company = window.SEO_COMPANY || { name:"", shop_description:"", shop_url:"", currency:"" };
+
+      group("🔎 SEO (Worker POST)");
+      log("POST", WORKER+"/", { pageUrl: location.href, preview: safeText.slice(0,120), company });
 
       const res = await fetch(WORKER+"/", {
         method:"POST",
         headers:{ "Content-Type":"application/json" },
-        body: JSON.stringify({
-          pageUrl: location.href,
-          pageContent: safeText,
-          company
-        })
+        body: JSON.stringify({ pageUrl: location.href, pageContent: safeText, company })
       });
 
-      let seo={};
-      try { seo = await res.json(); } catch(e){ console.warn("[SEO] Worker returned non-JSON.", e); return; }
+      const text = await res.text();
+      let seo = {};
+      try { seo = JSON.parse(text); } catch { seo = {}; }
 
-      // Validate before applying to avoid flashes
-      const bad = new Set(["false","null","undefined","n/a","none","0"]);
-      const t = (seo.meta_title||"").trim();
-      const d = (seo.meta_description||"").trim();
-      const ok = (t && !bad.has(t.toLowerCase())) || (d && !bad.has(d.toLowerCase()));
+      log("status:", res.status);
+      log("raw:", text);
+      log("json:", seo);
 
-      console.debug("[SEO] Injector received:", seo, "ok:", ok);
+      const t = esc(seo.meta_title||"");
+      const d = esc(seo.meta_description||"");
+      const usable = ok(t) || ok(d);
+      log("usable:", usable);
+      groupEnd();
 
-      if (!ok) return;
+      if (!usable) return;
       applySeo(seo);
     } catch (err){
-      console.error("[SEO] Injection failed:", err);
+      error("[SEO] Injection failed:", err);
     }
   }
 
-  // run + listen for Shopify events
-  injectSEO();
-  document.addEventListener("shopify:section:load", injectSEO);
-  document.addEventListener("shopify:navigation:end", injectSEO);
+  // Always print SSR snapshot immediately
+  logSSRIfPresent();
 
-  // expose for debugging if needed
+  // Then fetch AI and log results on page load
+  if (document.readyState === "complete" || document.readyState === "interactive") {
+    setTimeout(fetchAIAndLogApply, 0);
+  } else {
+    document.addEventListener("DOMContentLoaded", () => setTimeout(fetchAIAndLogApply, 0), { once:true });
+  }
+
+  // Also log on Shopify soft navs
+  document.addEventListener("shopify:section:load", fetchAIAndLogApply);
+  document.addEventListener("shopify:navigation:end", fetchAIAndLogApply);
+
+  // expose for manual testing
   window.__applySeoAgent = applySeo;
 })();
