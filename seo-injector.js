@@ -1,23 +1,14 @@
 /*!
- * SEO Injector (SSR-safe logger)
+ * SEO Injector (minimal console)
  *
- * Modes:
- *  - SSR-only (default for your setup):
- *      window.SEO_AGENT_SSR_ONLY = true (set in meta-tags snippet)
- *      → Does NOT mutate <head>, only logs Worker response.
+ * - Applies meta tags to <head>
+ * - Reapplies on Shopify soft navigation events
+ * - Logs ONE structured console item per page:
+ *   { pageUrl, prompt, ssr, worker, appliedClientSide }
  *
- *  - Hybrid:
- *      window.SEO_AGENT_SSR_ONLY = false (or undefined)
- *      → CAN still apply client-side meta overrides if desired.
- *
- * Behavior:
- *   - POSTs page content to Worker
- *   - Logs ONE structured console item per page:
- *       { source, pageUrl, prompt, ssr, worker, appliedClientSide, mode }
- *   - Re-runs on Shopify soft navigation events
- *
- * Optional:
- *   window.seoAiDebug = true;  // extra dev logging
+ * Usage:
+ *   <script>window.seoAiDebug = true; // optional, adds extra dev logging</script>
+ *   <script src="https://cdn.jsdelivr.net/gh/jflinn/seo-injector/seo-injector.js"></script>
  */
 
 (function () {
@@ -30,13 +21,9 @@
   // DEFAULT: false so we only log the single summary item.
   var DEBUG = (typeof window.seoAiDebug === "boolean") ? window.seoAiDebug : false;
 
-  // SSR-only flag set by Liquid snippet:
-  //   window.SEO_AGENT_SSR_ONLY = true;
-  var SSR_ONLY = !!window.SEO_AGENT_SSR_ONLY;
-
   /*** LOG HELPERS ***/
-  var group = function (t) { if (DEBUG) try { console.groupCollapsed(t); } catch (e) {} };
-  var groupEnd = function () { if (DEBUG) try { console.groupEnd(); } catch (e) {} };
+  var group = function (t) { if (DEBUG) try { console.groupCollapsed(t); } catch {} };
+  var groupEnd = function () { if (DEBUG) try { console.groupEnd(); } catch {} };
   var log = function () { if (DEBUG) console.log.apply(console, arguments); };
   var warn = function () { if (DEBUG) console.warn.apply(console, arguments); };
   var error = function () { if (DEBUG) console.error.apply(console, arguments); };
@@ -71,7 +58,7 @@
       var cur = start;
       while (cur) {
         var nxt = cur.nextSibling;
-        try { cur.remove(); } catch (e) {}
+        try { cur.remove(); } catch {}
         if (cur === end) break;
         cur = nxt;
       }
@@ -79,7 +66,7 @@
     // Remove any previous injected meta elements
     var flagged = head.querySelectorAll("[" + ATTR + '="true"]');
     for (var j = 0; j < flagged.length; j++) {
-      try { flagged[j].remove(); } catch (e) {}
+      try { flagged[j].remove(); } catch {}
     }
   }
 
@@ -128,9 +115,7 @@
 
   var _observer = null, _isUpdating = false;
   function startObserver(reapply) {
-    if (SSR_ONLY) return; // In SSR-only mode, no need to watch <head> mutations.
     if (typeof MutationObserver === "undefined") return;
-
     var head = document.head || document.getElementsByTagName("head")[0] || document.documentElement;
     var timer = null;
     _observer = new MutationObserver(function () {
@@ -150,15 +135,9 @@
     });
     _observer.observe(head, { childList: true, subtree: true, attributes: true, attributeFilter: ["content"] });
   }
-  function stopObserver() { if (_observer) { try { _observer.disconnect(); } catch (e) {} _observer = null; } }
+  function stopObserver() { if (_observer) { try { _observer.disconnect(); } catch {} _observer = null; } }
 
   function applySeo(seo) {
-    // In SSR-only mode we do not mutate <head> at all.
-    if (SSR_ONLY) {
-      window.__seoAiAppliedClientSide = false;
-      return;
-    }
-
     var head = document.head || document.getElementsByTagName("head")[0] || document.documentElement;
     if (!head || !seo) return;
     _isUpdating = true; stopObserver();
@@ -182,7 +161,7 @@
       var md = document.querySelector('meta[name="description"]');
       var ssrDesc = esc(md ? md.getAttribute("content") : "");
       var kwMeta = document.querySelector('meta[name="keywords"]');
-      var kw = esc(kwMeta ? kwMeta.getAttribute("content") : "");
+      var kw = esc(kwMeta ? kwMeta.getAttribute('content') : "");
       return {
         title: ssrTitle,
         description: ssrDesc,
@@ -210,7 +189,7 @@
       var ssrSnapshot = captureSSRSnapshot();
 
       var safeText = String(document.body.innerText || "")
-        .replace(/\s+/g, " ")
+        .replace(/\s+/g, ' ')
         .trim()
         .slice(0, 2000);
 
@@ -224,8 +203,7 @@
       var preview = safeText.slice(0, 400);
 
       group("🔎 SEO (Worker POST)");
-      log("mode:", SSR_ONLY ? "ssr-only" : "hybrid");
-      log("POST", WORKER + "/", { pageUrl: location.href, preview: preview, company: company });
+      log("POST", WORKER + "/", { pageUrl: location.href, preview: preview, company });
 
       var res = await fetch(WORKER + "/", {
         method: "POST",
@@ -239,7 +217,7 @@
 
       var text = await res.text();
       var seo = {};
-      try { seo = JSON.parse(text); } catch (e) { seo = {}; }
+      try { seo = JSON.parse(text); } catch { seo = {}; }
 
       window.__lastSeoAi = seo;
 
@@ -248,8 +226,7 @@
       log("usable:", usable);
       groupEnd();
 
-      // Only apply client-side overrides when NOT in SSR-only mode.
-      if (usable && !SSR_ONLY) {
+      if (usable) {
         applySeo(seo);
       }
 
@@ -260,7 +237,6 @@
       console.log(JSON.stringify({
         source: "seo-ai",
         pageUrl: location.href,
-        mode: SSR_ONLY ? "ssr-only" : "hybrid",
         prompt: {
           preview: preview,
           company: company
@@ -291,6 +267,6 @@
   document.addEventListener("shopify:section:load", fetchAIAndLogApply);
   document.addEventListener("shopify:navigation:end", fetchAIAndLogApply);
 
-  // Manual hook for testing (respects SSR_ONLY flag inside applySeo)
+  // Manual hook for testing
   window.__applySeoAgent = applySeo;
 })();
