@@ -1,14 +1,9 @@
 /*!
- * SEO Injector (SSR-safe logger)
+ * SEO Injector (SSR-safe logger, NO client-side <head> mutations)
  *
  * Modes:
- *  - SSR-only (default for your setup):
- *      window.SEO_AGENT_SSR_ONLY = true (set in meta-tags snippet)
- *      → Does NOT mutate <head>, only logs Worker response.
- *
- *  - Hybrid:
- *      window.SEO_AGENT_SSR_ONLY = false (or undefined)
- *      → CAN still apply client-side meta overrides if desired.
+ *  - This theme: SSR-only
+ *      → Injector never mutates <head>; it only POSTs to Worker + logs.
  *
  * Behavior:
  *   - POSTs page content to Worker
@@ -19,7 +14,6 @@
  * Optional:
  *   window.seoAiDebug = true;  // extra dev logging
  */
-
 (function () {
   "use strict";
 
@@ -30,9 +24,8 @@
   // DEFAULT: false so we only log the single summary item.
   var DEBUG = (typeof window.seoAiDebug === "boolean") ? window.seoAiDebug : false;
 
-  // SSR-only flag set by Liquid snippet:
-  //   window.SEO_AGENT_SSR_ONLY = true;
-  var SSR_ONLY = !!window.SEO_AGENT_SSR_ONLY;
+  // This theme runs in SSR-only mode: injector NEVER mutates <head>.
+  var SSR_ONLY = true;
 
   /*** LOG HELPERS ***/
   var group = function (t) { if (DEBUG) try { console.groupCollapsed(t); } catch (e) {} };
@@ -52,127 +45,13 @@
   };
 
   /*** UTILITIES ***/
-  var START = "seo-agent-start", END = "seo-agent-end", ATTR = "data-seo-agent";
   var BAD = new Set(["false", "null", "undefined", "n/a", "none", "0"]);
   var esc = function (s) { return String(s == null ? "" : s).trim(); };
   var ok = function (s) { var v = esc(s); return !!v && !BAD.has(v.toLowerCase()); };
 
-  function removeBlock(head) {
-    var start = null, end = null;
-    // Find our comment block markers
-    for (var i = 0; i < head.childNodes.length; i++) {
-      var n = head.childNodes[i];
-      if (n.nodeType === 8 && n.data && n.data.trim() === START) start = n;
-      if (n.nodeType === 8 && n.data && n.data.trim() === END)   end = n;
-      if (start && end) break;
-    }
-    // Remove marked block
-    if (start && end) {
-      var cur = start;
-      while (cur) {
-        var nxt = cur.nextSibling;
-        try { cur.remove(); } catch (e) {}
-        if (cur === end) break;
-        cur = nxt;
-      }
-    }
-    // Remove any previous injected meta elements
-    var flagged = head.querySelectorAll("[" + ATTR + '="true"]');
-    for (var j = 0; j < flagged.length; j++) {
-      try { flagged[j].remove(); } catch (e) {}
-    }
-  }
-
-  function buildFrag(seo) {
-    var f = document.createDocumentFragment();
-    f.appendChild(document.createComment(START));
-
-    if (ok(seo.meta_title)) {
-      var t = document.createElement("title");
-      t.setAttribute(ATTR, "true");
-      t.textContent = esc(seo.meta_title);
-      f.appendChild(t);
-    }
-    if (ok(seo.meta_description)) {
-      var d = document.createElement("meta");
-      d.setAttribute("name", "description");
-      d.setAttribute("content", esc(seo.meta_description));
-      d.setAttribute(ATTR, "true");
-      f.appendChild(d);
-    }
-    if (Array.isArray(seo.keywords) && seo.keywords.length) {
-      var k = document.createElement("meta");
-      k.setAttribute("name", "keywords");
-      k.setAttribute("content", seo.keywords.map(esc).filter(Boolean).join(", "));
-      k.setAttribute(ATTR, "true");
-      f.appendChild(k);
-    }
-    if (ok(seo.meta_title)) {
-      var ogt = document.createElement("meta");
-      ogt.setAttribute("property", "og:title");
-      ogt.setAttribute("content", esc(seo.meta_title));
-      ogt.setAttribute(ATTR, "true");
-      f.appendChild(ogt);
-    }
-    if (ok(seo.meta_description)) {
-      var ogd = document.createElement("meta");
-      ogd.setAttribute("property", "og:description");
-      ogd.setAttribute("content", esc(seo.meta_description));
-      ogd.setAttribute(ATTR, "true");
-      f.appendChild(ogd);
-    }
-
-    f.appendChild(document.createComment(END));
-    return f;
-  }
-
-  var _observer = null, _isUpdating = false;
-  function startObserver(reapply) {
-    if (SSR_ONLY) return; // In SSR-only mode, no need to watch <head> mutations.
-    if (typeof MutationObserver === "undefined") return;
-
-    var head = document.head || document.getElementsByTagName("head")[0] || document.documentElement;
-    var timer = null;
-    _observer = new MutationObserver(function () {
-      if (_isUpdating) return;
-      var flagged = head.querySelectorAll("[" + ATTR + '="true"]').length > 0;
-      var hasS = false, hasE = false;
-      for (var i = 0; i < head.childNodes.length; i++) {
-        var n = head.childNodes[i];
-        if (n.nodeType === 8 && n.data && n.data.trim() === START) hasS = true;
-        if (n.nodeType === 8 && n.data && n.data.trim() === END)   hasE = true;
-        if (hasS && hasE) break;
-      }
-      if (!flagged || !hasS || !hasE) {
-        clearTimeout(timer);
-        timer = setTimeout(reapply, 150);
-      }
-    });
-    _observer.observe(head, { childList: true, subtree: true, attributes: true, attributeFilter: ["content"] });
-  }
-  function stopObserver() { if (_observer) { try { _observer.disconnect(); } catch (e) {} _observer = null; } }
-
+  // In SSR-only mode, this is just a no-op stub for safety.
   function applySeo(seo) {
-    // In SSR-only mode we do not mutate <head> at all.
-    if (SSR_ONLY) {
-      window.__seoAiAppliedClientSide = false;
-      return;
-    }
-
-    var head = document.head || document.getElementsByTagName("head")[0] || document.documentElement;
-    if (!head || !seo) return;
-    _isUpdating = true; stopObserver();
-    try {
-      removeBlock(head);
-      head.insertBefore(buildFrag(seo), head.firstChild);
-      if (ok(seo.meta_title)) document.title = esc(seo.meta_title);
-      window.__seoAiAppliedClientSide = true;
-    } finally {
-      _isUpdating = false;
-      startObserver(function () {
-        try { applySeo(seo); } catch (e) { warn("[SEO] reapply error", e); }
-      });
-    }
+    window.__seoAiAppliedClientSide = false;
   }
 
   // Capture SSR snapshot (no logging)
@@ -224,7 +103,7 @@
       var preview = safeText.slice(0, 400);
 
       group("🔎 SEO (Worker POST)");
-      log("mode:", SSR_ONLY ? "ssr-only" : "hybrid");
+      log("mode:", "ssr-only");
       log("POST", WORKER + "/", { pageUrl: location.href, preview: preview, company: company });
 
       var res = await fetch(WORKER + "/", {
@@ -248,10 +127,8 @@
       log("usable:", usable);
       groupEnd();
 
-      // Only apply client-side overrides when NOT in SSR-only mode.
-      if (usable && !SSR_ONLY) {
-        applySeo(seo);
-      }
+      // NEVER apply client-side overrides in this theme.
+      applySeo(seo);
 
       var appliedClientSide = !!window.__seoAiAppliedClientSide;
 
@@ -260,7 +137,7 @@
       console.log(JSON.stringify({
         source: "seo-ai",
         pageUrl: location.href,
-        mode: SSR_ONLY ? "ssr-only" : "hybrid",
+        mode: "ssr-only",
         prompt: {
           preview: preview,
           company: company
@@ -291,6 +168,6 @@
   document.addEventListener("shopify:section:load", fetchAIAndLogApply);
   document.addEventListener("shopify:navigation:end", fetchAIAndLogApply);
 
-  // Manual hook for testing (respects SSR_ONLY flag inside applySeo)
+  // Manual hook for testing (respects SSR-only no-op behavior)
   window.__applySeoAgent = applySeo;
 })();
