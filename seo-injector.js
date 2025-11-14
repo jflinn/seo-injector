@@ -54,7 +54,29 @@
     window.__seoAiAppliedClientSide = false;
   }
 
-  
+  // Capture SSR snapshot (no logging)
+  function captureSSRSnapshot() {
+    try {
+      var ssrTitle = esc(document.title || "");
+      var md = document.querySelector('meta[name="description"]');
+      var ssrDesc = esc(md ? md.getAttribute("content") : "");
+      var kwMeta = document.querySelector('meta[name="keywords"]');
+      var kw = esc(kwMeta ? kwMeta.getAttribute("content") : "");
+      return {
+        title: ssrTitle,
+        description: ssrDesc,
+        keywords: kw,
+        hadAi: !!window.SEO_AGENT_HAS_AI
+      };
+    } catch (e) {
+      return {
+        title: "",
+        description: "",
+        keywords: "",
+        hadAi: !!window.SEO_AGENT_HAS_AI
+      };
+    }
+  }
 
   async function fetchAIAndLogApply() {
     try {
