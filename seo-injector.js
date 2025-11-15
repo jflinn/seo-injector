@@ -132,21 +132,10 @@
 
       var appliedClientSide = !!window.__seoAiAppliedClientSide;
 
-      // 🔁 Make a shallow copy for logging and add human-readable date, if available
-      var seoForLog = seo || {};
-      try {
-        if (typeof seoForLog.last_generated === "number") {
-          // last_generated expected to be ms since epoch
-          seoForLog.last_generated_human = new Date(seoForLog.last_generated).toISOString();
-        }
-      } catch (e) {
-        // If anything goes wrong, just don't add the human-readable field
-      }
-
       // 🔥 SINGLE CONSOLE ITEM:
       // prompt + results + SSR vs client-side info
       console.log(JSON.stringify({
-        source: "srm-seo-agent",   // renamed from "seo-ai"
+        source: "seo-ai",
         pageUrl: location.href,
         mode: "ssr-only",
         prompt: {
@@ -156,7 +145,7 @@
         ssr: ssrSnapshot,
         worker: {
           status: res.status,
-          seo: seoForLog
+          seo: seo
         },
         appliedClientSide: appliedClientSide
       }, null, 2));
