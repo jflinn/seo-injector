@@ -49,10 +49,61 @@
   var esc = function (s) { return String(s == null ? "" : s).trim(); };
   var ok = function (s) { var v = esc(s); return !!v && !BAD.has(v.toLowerCase()); };
 
-  // In SSR-only mode, this is just a no-op stub for safety.
-  function applySeo(seo) {
+// Apply Worker SEO to <head>, making it the priority over SSR.
+function applySeo(seo, ssrSnapshot) {
+  try {
+    var used = false;
+    if (!seo) {
+      window.__seoAiAppliedClientSide = false;
+      return;
+    }
+
+    // --- TITLE ---
+    if (ok(seo.meta_title)) {
+      var newTitle = esc(seo.meta_title);
+      var currentTitle = esc(document.title || "");
+
+      if (newTitle && newTitle !== currentTitle) {
+        document.title = newTitle;
+        used = true;
+      }
+    }
+
+    // --- DESCRIPTION ---
+    if (ok(seo.meta_description)) {
+      var newDesc = esc(seo.meta_description);
+      var md = document.querySelector('meta[name="description"]');
+      if (!md) {
+        md = document.createElement("meta");
+        md.setAttribute("name", "description");
+        document.head.appendChild(md);
+      }
+      var currentDesc = esc(md.getAttribute("content") || "");
+
+      if (newDesc && newDesc !== currentDesc) {
+        md.setAttribute("content", newDesc);
+        used = true;
+      }
+    }
+
+    if (Array.isArray(seo.keywords) && seo.keywords.length) {
+      var kwMeta = document.querySelector('meta[name="keywords"]');
+      if (!kwMeta) {
+        kwMeta = document.createElement("meta");
+        kwMeta.setAttribute("name", "keywords");
+        document.head.appendChild(kwMeta);
+      }
+      kwMeta.setAttribute("content", seo.keywords.join(", "));
+      used = true;
+    }
+
+    window.__seoAiAppliedClientSide = used;
+  } catch (e) {
     window.__seoAiAppliedClientSide = false;
   }
+}
+
+
 
   // Capture SSR snapshot (no logging)
   function captureSSRSnapshot() {
